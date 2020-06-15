@@ -1,0 +1,812 @@
+#include "myfs.h"
+#include <bits/stdc++.h>
+
+using namespace std; 
+
+mrfs myfs; 
+int cwd = 0;
+
+/*
+ *This function returns the first free inode
+ *If no free inode is available it returns -1
+ */
+int next_inode()
+{
+	int next = 0;
+	for(int i = 0; i< myfs.super->max_inodes;i++)
+	{
+		if(myfs.super->inode_map[i] == 0)
+			break;
+		next++;
+	}
+	if(next == myfs.super->max_inodes)
+		return -1;
+	else
+		{
+
+			myfs.super->inode_map.set(next);
+			myfs.super->act_inodes++;
+			return next;
+		}
+}
+
+/*
+ *This function returns the first data block
+ *If no free data block is available it returns -1
+ */
+int next_free_block()
+{
+	int next = 0;
+	for(int i = 0; i< myfs.super->max_blocks;i++)
+	{
+		if(myfs.super->block_map[i] == 0)
+			break;
+		next++;
+	}
+	if(next == myfs.super->max_blocks)
+		return -1;
+	else
+		{
+			myfs.super->block_map.set(next);
+			myfs.super->act_blocks++;
+			//cout << next << endl;
+			return next;
+		}
+}
+
+/*
+ *Allocates memory for the filesystem
+ *Creates and initialize the super block
+ *Creates and initalize the inode_list block
+ *Creates the root directory
+ */
+int create_myfs(int size){
+
+	int size_bytes= size*(1<<20);
+	int size_block = size_bytes/BLOCK_SIZE + 1;
+	if( SUP_BLOCK_SIZE + INODE_BLOCK_SIZE + BLOCK_SIZE > size_block)
+	{
+		return -1;
+	}
+	int size_super = SUP_BLOCK_SIZE * BLOCK_SIZE; 
+	int size_inode_b = INODE_BLOCK_SIZE * BLOCK_SIZE;
+	
+	myfs.mem = (char*)(malloc(BLOCK_SIZE*size_block));
+	if(!myfs.mem)
+	{
+		return -1;
+	}
+	for(int i = 0; i < BLOCK_SIZE*size_block; i+=4)
+	{
+		int* t = (int*)(myfs.mem + i);
+		*t = -1;
+	}
+
+	//Initialize the super block
+	myfs.super = (super_t*)myfs.mem;
+
+	myfs.super->totalsize = size_block*BLOCK_SIZE;
+	myfs.super->max_inodes = MAX_INS;
+	myfs.super->act_inodes = 0;
+	myfs.super->max_blocks = size_block - SUP_BLOCK_SIZE - INODE_BLOCK_SIZE;
+	myfs.super->act_blocks = 0;
+	for(int i = 0; i < MAX_INS; i++)
+		myfs.super->inode_map[i] = 0;
+	for(int i = 0; i < MAX_MEM; i++)
+		myfs.super->block_map[i] = 0;
+
+	//Initialize the inode list block 
+	myfs.inode = (inode_list_t*)(myfs.mem + size_super);
+
+	//Initialize the data block segment
+	myfs.db_blocks = (data_block_t*)(myfs.mem + size_super + size_inode_b);
+
+	//Create the root directory
+	cwd = 0;
+
+	myfs.super->act_inodes = 1;
+	myfs.super->inode_map[0] = 1;
+	strcpy(myfs.inode->list[0].filename,"root");
+	myfs.inode->list[0].file_t = directory;
+	myfs.inode->list[0].filesize = 0;
+	time(&(myfs.inode->list[0].last_modified));
+	time(&(myfs.inode->list[0].last_read));
+	// myfs.inode->list[0].permit.u = {true, true, true};
+	// myfs.inode->list[0].permit.g = {true, true, true};
+	// myfs.inode->list[0].permit.o = {true, true, true};
+	for(int i = 0; i < MAX_PTR ; i++)
+		myfs.inode->list[0].db_pointer[i] = -1;
+
+	return 0; 
+
+}
+
+/*
+ *This function searches for a free space to the add the file information in the given directory - dir
+ *It returns a pointer to the start if that free location
+ */
+int* search_directory_space(int dir)
+{
+	int* ptr = NULL;
+	int case_t;
+	for(int i = 0; i< 10; i++)
+	{
+		if(myfs.inode->list[dir].db_pointer[i] == -1)
+		{
+			case_t = 0;
+			if(i < 8)
+			{
+				int data_b = next_free_block();
+				if(data_b == -1)
+				{
+					return NULL;
+				}
+				myfs.inode->list[dir].db_pointer[i] = data_b;
+				ptr = (int*)(myfs.db_blocks[data_b].data);
+
+			}
+			else if(i == 8)
+			{
+				int data_b = next_free_block();
+				if(data_b == -1)
+				{
+					return NULL;
+				}
+				myfs.inode->list[dir].db_pointer[i] = data_b;
+				ind_t* indir = (ind_t*)myfs.db_blocks[data_b].data;
+
+				data_b = next_free_block();
+				if(data_b == -1)
+				{
+					return NULL;
+				}
+				indir->indirect[0] = data_b;
+				ptr = (int*)(myfs.db_blocks[data_b].data);
+
+			}
+			else if(i == 9)
+			{
+				int data_b = next_free_block();
+				if(data_b == -1)
+				{
+					return NULL;
+				}
+				myfs.inode->list[dir].db_pointer[i] = data_b;
+				ind_t* dindir = (ind_t*)myfs.db_blocks[data_b].data;
+
+				data_b = next_free_block();
+				if(data_b == -1)
+				{
+					return NULL;
+				}
+				dindir->indirect[0] = data_b;
+				ind_t* indir = (ind_t*)myfs.db_blocks[data_b].data;
+
+				data_b = next_free_block();
+				if(data_b == -1)
+				{
+					return NULL;
+				}
+				indir->indirect[0] = data_b;
+				ptr = (int*)(myfs.db_blocks[data_b].data);
+			}
+			break;
+		}
+		if(i < 8)
+		{
+			/*First searching the first 8 direct data blocks*/
+			int block = myfs.inode->list[dir].db_pointer[i];
+			char* db = myfs.db_blocks[block].data;
+
+			/*Search through the data block for a -1*/
+			int flag = 0;
+			for(int i = 0; i < BLOCK_SIZE; i+=32)
+			{
+				int* t = (int*)(db+i);
+				if(*t == -1)
+					{
+						/*If found, then we have found and empty space to add the file to the direcrory*/
+						ptr = t;
+						case_t = 1;
+						flag = 1;
+						break;
+					}
+			}
+			if(flag == 1)
+				break;
+
+		}
+		else if(i == 8)
+		{
+			/*If the data blocks get over we search the indirect block*/
+			int ind_ptrs = 0;
+			ind_t* indi = (ind_t*)(myfs.db_blocks[myfs.inode->list[dir].db_pointer[i]].data);
+			int flag = 0;
+			/*Search in the indirect block for a space*/
+			while(ind_ptrs < BLOCK_SIZE/4 && indi->indirect[ind_ptrs] != -1)
+			{
+				int block = indi->indirect[ind_ptrs];
+				char* db = myfs.db_blocks[block].data;
+				for(int i = 0; i < BLOCK_SIZE; i+=32)
+				{	
+					int* t = (int*)(db+i);
+					if(*t == -1)
+						{
+							/*If found, then we have found an empty space*/
+							ptr = t;
+							case_t = 2;
+							flag = 1;
+							break;
+						}
+				}
+				if(flag == 1)
+					break;
+				ind_ptrs++;
+			}
+			if(flag == 1)
+				break;
+
+			/*If a new pointer to a data block needs to be added to the indirect block then do it*/
+			if(indi->indirect[ind_ptrs] == -1)
+			{
+				case_t = 3;
+				int data_b = next_free_block();
+				if(data_b == -1)
+				{
+					return NULL;
+				}
+				indi->indirect[ind_ptrs]=data_b;
+				ptr = (int*)(myfs.db_blocks[data_b].data);
+				break;
+			}
+
+		}
+		else if(i == 9)
+		{
+			int dind_ptrs = 0;
+			ind_t* dindirect = (ind_t*)(myfs.db_blocks[myfs.inode->list[dir].db_pointer[i]].data);
+			int flag1 = 0;
+			while(dind_ptrs < BLOCK_SIZE/4 && dindirect->indirect[dind_ptrs] !=-1)
+			{
+				/*Same as the indirect pointer find*/
+				int ind_ptrs = 0;
+				ind_t* indi = (ind_t*)(myfs.db_blocks[dindirect->indirect[dind_ptrs]].data);
+				int flag = 0;
+				/*Search in the indirect block for a space*/
+				while(ind_ptrs < BLOCK_SIZE/4 && indi->indirect[ind_ptrs] != -1)
+				{
+					int block = indi->indirect[ind_ptrs];
+					char* db = myfs.db_blocks[block].data;
+					for(int i = 0; i < BLOCK_SIZE; i+=32)
+					{	
+						int* t = (int*)(db+i);
+						if(*t == -1)
+							{
+								/*If found, then we have found an empty space*/
+								ptr = t;
+								case_t = 4;
+								flag = 1;
+								flag1 = 1;
+								break;
+							}
+					}
+					if(flag == 1)
+							break;
+					ind_ptrs++;
+				}
+				if(flag == 1)
+				{
+					flag1 = 1;
+					break;
+				}
+
+				/*If a new pointer to a data block needs to be added to the indirect block then do it*/
+				if(indi->indirect[ind_ptrs] == -1)
+				{
+					case_t = 5;
+					int data_b = next_free_block();
+					if(data_b == -1)
+					{
+						return NULL;
+					}
+					indi->indirect[ind_ptrs]=data_b;
+					ptr = (int*)(myfs.db_blocks[data_b].data);
+					flag1 =1;
+					break;
+				}
+
+				dind_ptrs++;
+
+			}
+			if(flag1 == 1)
+				break;
+			else
+			{
+				if(dind_ptrs < BLOCK_SIZE/4 &&  dindirect->indirect[dind_ptrs] ==-1)
+				{
+					case_t = 6;
+					int data_b = next_free_block();
+					if(data_b == -1)
+					{
+						return NULL;
+					}
+					dindirect->indirect[dind_ptrs] = data_b;
+
+					ind_t* indir = (ind_t*)(myfs.db_blocks[data_b].data);
+					data_b = next_free_block();
+					if(data_b == -1)
+					{
+						return NULL;
+					}
+					indir->indirect[0]  = data_b;
+					ptr = (int*)(myfs.db_blocks[data_b].data);
+					break;
+				}
+
+			}
+
+		}
+	}
+	return ptr;
+
+}
+
+/*
+ *Create the inode for the file
+ *read data from the source file block wise and store in myfs following the structure of pointers - direct, indirect and double indirect
+ *Add the file details to the current working directory
+ */
+int copy_pc2myfs(char* source, char* destination)
+{
+	//Open the source file
+	char data[BLOCK_SIZE];
+	ifstream infile;
+	infile.open(source, std::ifstream::binary);
+	if(!infile)
+	{
+		cout << "Unable to open" << endl;
+	}
+
+	infile.seekg (0, infile.end);
+    int length = infile.tellg();
+    infile.seekg (0, infile.beg);
+
+	//Create the destination file
+	int inode_no = next_inode();
+	if(inode_no == -1)
+	{
+		return -1;
+	}
+	strcpy(myfs.inode->list[inode_no].filename,destination);
+	myfs.inode->list[inode_no].file_t = regular;
+	myfs.inode->list[inode_no].filesize = length;
+	time(&(myfs.inode->list[inode_no].last_modified));
+	time(&(myfs.inode->list[inode_no].last_read));
+	// myfs.inode->list[inode_no].permit.u = {true, true, true};
+	// myfs.inode->list[inode_no].permit.g = {true, true, true};
+	// myfs.inode->list[inode_no].permit.o = {true, true, true};
+	for(int i = 0; i < MAX_PTR ; i++)
+		myfs.inode->list[inode_no].db_pointer[i] = -1;
+	myfs.super->inode_map[inode_no] = 1;
+
+	int pointer = 0;
+	int data_b ;
+	ind_t* indir;
+	ind_t* dindirect;
+	int ind_ptrs;
+	int dind_ptrs;
+	int cnt = 0;
+	while(!infile.eof())
+	{
+		infile.read (data,BLOCK_SIZE);
+		if(pointer < 8)
+		{
+			/*For direct blocks directly add the data*/
+			data_b = next_free_block();
+			if(data_b == -1)
+			{
+				return -1;
+			}
+			bcopy(data, myfs.db_blocks[data_b].data, BLOCK_SIZE);
+		
+			cnt++;
+			myfs.inode->list[inode_no].db_pointer[pointer] = data_b; 
+			pointer++;
+			continue;
+		}
+		else if(pointer == 8)
+		{
+			/*Fpr single indirect block*/
+			if(myfs.inode->list[inode_no].db_pointer[pointer] == -1)
+			{
+				/*Get the indirect block and store its pointer in the indirect pointer in the file inode*/
+				data_b = next_free_block();
+				if(data_b == -1)
+				{
+					return -1;
+				}
+				myfs.inode->list[inode_no].db_pointer[pointer] = data_b;
+				indir = (ind_t*)myfs.db_blocks[myfs.inode->list[inode_no].db_pointer[pointer]].data;
+				ind_ptrs = 0;
+			}
+			/*Fetch a data block*/
+			data_b = next_free_block();
+			if(data_b == -1)
+			{
+				return -1;
+			}
+
+			/*Copy the data into the data block*/
+			bcopy(data, myfs.db_blocks[data_b].data, BLOCK_SIZE);
+			cnt++;
+			/*Make a pointer in the indirect block*/
+			indir->indirect[ind_ptrs] = data_b;
+			ind_ptrs++;
+
+			if(ind_ptrs == (BLOCK_SIZE/4))
+				{
+					pointer++;
+					continue;
+				}
+		}
+		else if(pointer == 9)
+		{
+			if(myfs.inode->list[inode_no].db_pointer[pointer] == -1)
+			{
+				/*Create the double indirect block*/
+				data_b = next_free_block();
+				if(data_b == -1)
+				{
+					return -1;
+				}
+				myfs.inode->list[inode_no].db_pointer[pointer] = data_b;
+				dindirect = (ind_t*)(myfs.db_blocks[myfs.inode->list[inode_no].db_pointer[pointer]].data);
+				dind_ptrs = 0;
+
+				/*Create the first indirect block and store it in the double indirect block*/
+				data_b = next_free_block();
+				if(data_b == -1)
+				{
+					return -1;
+				}
+				dindirect->indirect[dind_ptrs] = data_b;
+				indir = (ind_t*)(myfs.db_blocks[data_b].data);
+				ind_ptrs = 0;
+			}
+
+			data_b = next_free_block();
+			if(data_b == -1)
+			{
+				return -1;
+			}
+
+			/*Copy the data into the data block*/
+			bcopy(data, myfs.db_blocks[data_b].data, BLOCK_SIZE);
+			cnt++;
+			
+			/*Make a pointer in the indirect block*/
+			indir->indirect[ind_ptrs] = data_b;
+			ind_ptrs++;
+
+			if(ind_ptrs >= BLOCK_SIZE/4)
+			{
+				data_b = next_free_block();
+				if(data_b == -1)
+				{
+					return -1;
+				}
+				dind_ptrs++;
+				if(dind_ptrs == BLOCK_SIZE/4)
+				{
+					pointer++;
+					continue;
+				}
+				dindirect->indirect[dind_ptrs] = data_b;
+				indir = (ind_t*)(myfs.db_blocks[dindirect->indirect[dind_ptrs]].data);
+				ind_ptrs = 0;
+			}
+
+		}
+		else
+		{
+			cout << "Error:Size limit exceeded for file - " << cnt << endl;
+			return -1;
+		}
+	}
+
+	/*Adding the file to the current working directory*/
+	int* ptr = search_directory_space(cwd);
+	if(ptr == NULL)
+	{
+		cout << "Could not add file to directory";
+		return -1;	
+	}
+	dir_entry_t* di = (dir_entry_t*)ptr;
+	strcpy(di->filename,destination);
+	di->inode = (short)inode_no;
+	//cout << di->filename << " - " << di->inode << endl;
+	return 0;
+
+}
+
+/*
+ *Returns a list of the files in a directory along with the corresponing pointer to the particular file entry in myfs
+ */
+void ls(vector<ls_list_t>* list)
+{
+	inode_t curr = myfs.inode->list[cwd];
+	int* ptr;
+	int* ptr_ind;
+	int* ptr_dind;
+	dir_entry_t* d; 
+	ls_list_t elem;
+	for(int i = 0; i<10; i++)
+	{
+		if(curr.db_pointer[i] == -1)
+			continue;
+		if(i<8)
+		{
+			for(int x = 0; x < BLOCK_SIZE; x+=32)
+			{
+				ptr = (int*)(myfs.db_blocks[curr.db_pointer[i]].data+x);
+				if(*ptr!=-1)
+				{
+					d = (dir_entry_t*)ptr;
+					elem.di = *d;
+					elem.ptr = ptr;
+					(*list).push_back(elem);	
+				}
+			}
+			
+		}
+		else if( i == 8 )
+		{
+			for(int x = 0; x < BLOCK_SIZE; x+=32)
+			{
+				ptr = (int*)(myfs.db_blocks[curr.db_pointer[i]].data + x);
+				if(*ptr!=-1)
+				{	
+					for(int j = 0; j < BLOCK_SIZE; j+=32)
+					{
+
+						ptr_ind = (int*)(myfs.db_blocks[*ptr].data + j);
+						if(*ptr_ind!=-1)
+						{
+							d = (dir_entry_t*)ptr_ind;
+							elem.di = *d;
+							elem.ptr = ptr_ind;
+							(*list).push_back(elem);	
+						}
+					}
+				}
+			}
+		}
+		else if(i == 9)
+		{
+			for(int k = 0; k< BLOCK_SIZE; k++)
+			{
+				ptr_dind = (int*)(myfs.db_blocks[curr.db_pointer[i]].data + k);
+				if(*ptr_dind!=-1)
+				{
+					for(int x = 0; x < BLOCK_SIZE; x+=32)
+					{
+						ptr = (int*)(myfs.db_blocks[*ptr_dind].data + x);
+						if(*ptr!=-1)
+						{	
+							for(int j = 0; j < BLOCK_SIZE; j+=32)
+							{
+
+								ptr_ind = (int*)(myfs.db_blocks[*ptr].data + j);
+								if(*ptr_ind!=-1)
+								{
+									d = (dir_entry_t*)ptr_ind;
+									elem.di = *d;
+									elem.ptr = ptr_ind;
+									list->push_back(elem);	
+								}
+							}
+						}
+					
+					}
+				}
+			}
+		}
+	}
+}
+
+/*
+ *Prints the files in the current working directory 
+ */
+int ls_myfs()
+{
+	vector<ls_list_t> v;
+	ls(&v);
+	int size = v.size();
+	for(int i = 0; i < size; i++)
+	{
+		cout << v[i].di.filename << " - " << v[i].di.inode << endl;
+	}
+	return 0;
+}
+
+
+/*
+*Helper function to locate data blocks for a file
+*/
+int get_pointer_by_index(inode_t node, int index)
+{
+	if(index < 8)
+	{
+		return node.db_pointer[index];
+	}
+	else if(8<= index && index < (8+(BLOCK_SIZE/4)))
+	{
+		int* ptr = (int *)(myfs.db_blocks[node.db_pointer[8]].data);
+		ptr += (index - 8);
+		return *ptr;
+	}
+	else
+	{
+		int* ptr = (int *)(myfs.db_blocks[node.db_pointer[9]].data);
+		//cout << *ptr << " - ";
+		index = index - 8 - (BLOCK_SIZE/4);
+		int i1 = index/(BLOCK_SIZE/4);
+		ptr+= i1;
+		ptr = (int*)(myfs.db_blocks[*ptr].data);
+		int i2 = index%(BLOCK_SIZE/4);
+		ptr+=i2;
+		//cout << *ptr << " - " << endl;
+		return *ptr;
+	}
+}
+
+/*
+ *Removes the specified file from the current working directory if present
+ */
+int rm_myfs(char* filename)
+{
+	vector<ls_list_t> v;
+	ls(&v);
+	inode_t temp;
+	int flag = 0;
+	for(int i = 0; i < v.size(); i++)
+	{
+		if(strcmp(v[i].di.filename, filename) == 0)
+		{
+			cout << "Found " << filename <<"\nNow deleting..\n";
+			//cout << MAX_MEM << endl;
+			temp = myfs.inode->list[v[i].di.inode];
+			if(temp.file_t == regular)
+			{
+				int ptr_req = temp.filesize/BLOCK_SIZE +1;
+				for(int j = 0; j<ptr_req;j++)
+				{
+					int db = get_pointer_by_index(temp,j);
+					//cout << db << endl;
+					int* t;
+					for(int k =0; k < BLOCK_SIZE;k+=4)
+					{
+						t = (int*)(myfs.db_blocks[db].data+k);
+						*t = -1;
+					}
+					myfs.super->block_map[db] = 0;
+					myfs.super->act_blocks--;
+				}
+				inode_t* tmp = &myfs.inode->list[v[i].di.inode];
+
+				/*Free all the direct, indirect and double indirect blocks*/
+				for(int j = 0; j < MAX_PTR;j++)
+					{
+						if(j<8)
+						{
+							tmp->db_pointer[j] = -1;
+						}
+						else if(j==8)
+						{
+							if(tmp->db_pointer[j] != -1)
+								{
+									for(int l=0; l<BLOCK_SIZE;l+=4)
+									{
+										int* t= (int*)(myfs.db_blocks[tmp->db_pointer[j]].data+l);
+										*t = -1;
+									}
+									myfs.super->block_map[tmp->db_pointer[j]] = 0;
+									myfs.super->act_blocks--;
+								}
+								tmp->db_pointer[j] = -1;
+						}
+						else
+						{
+							if(tmp->db_pointer[j] != -1)
+							{
+								ind_t* dindirect = (ind_t*)(myfs.db_blocks[tmp->db_pointer[j]].data);
+								int dind_pts = 0;
+								for(int m = 0; m < BLOCK_SIZE/4; m++)
+								{
+									if(dindirect->indirect[m]!=-1)
+									{
+										for(int l=0; l<BLOCK_SIZE;l+=4)
+										{
+											int* t= (int*)(myfs.db_blocks[dindirect->indirect[m]].data+l);
+											*t = -1;
+										}
+										myfs.super->block_map[dindirect->indirect[m]] = 0;
+										myfs.super->act_blocks--;
+									}
+									dindirect->indirect[m] = -1;
+								}
+								myfs.super->block_map[tmp->db_pointer[j]] = 0;
+								myfs.super->act_blocks--;
+							}
+							tmp->db_pointer[j] = -1;	
+						}
+
+					}
+				strcpy(tmp->filename, "");
+				tmp->filesize = 0;
+				tmp->last_modified = 0;
+				tmp->last_read = 0;
+				for(int f = 0; f < 8; f+=1)
+				{
+					int* t = (v[i].ptr + f);
+					*t = -1;
+				}
+				myfs.super->inode_map[v[i].di.inode] = 0;
+				myfs.super->act_inodes--;
+				flag = 1;
+				break;
+			}
+		}
+	}
+	if(flag == 0)
+		return -1;
+	else
+		return 0;
+
+}
+
+
+/*
+ *
+ */
+int showfile_myfs(char* filename)
+{
+	vector<ls_list_t> v;
+	ls(&v);
+	inode_t temp;
+	int flag = 0;
+	char data[BLOCK_SIZE];
+	for(int i = 0; i < v.size(); i++)
+	{
+		if(strcmp(v[i].di.filename, filename) == 0)
+		{
+			cout << "Found " << filename <<"\nNow showing..\n";
+			//cout << MAX_MEM << endl;
+			temp = myfs.inode->list[v[i].di.inode];
+			if(temp.file_t == regular)
+			{
+				int ptr_req = temp.filesize/BLOCK_SIZE +1;
+				for(int j = 0; j<ptr_req;j++)
+				{
+					int db = get_pointer_by_index(temp,j);
+
+					bzero(data, BLOCK_SIZE);
+					bcopy(myfs.db_blocks[db].data,data,BLOCK_SIZE);
+
+					for(int j = 0; j<BLOCK_SIZE;j++)
+						cout << data[j];
+					//cout << db << endl;
+					
+				}
+				inode_t* tmp = &myfs.inode->list[v[i].di.inode];
+				flag = 1;
+				break;
+			}
+		}
+	}
+	if(flag == 0)
+		return -1;
+	else
+		return 0;
+}
+
